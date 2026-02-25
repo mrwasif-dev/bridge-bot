@@ -1,4 +1,5 @@
-const youtubedl = require('youtube-dl-exec');
+const ytdl = require('@distube/ytdl-core');
+const ytpl = require('ytpl');
 const fs = require('fs-extra');
 const path = require('path');
 const axios = require('axios');
@@ -20,15 +21,15 @@ async function getVideoInfo(url) {
             throw new Error('Could not extract video ID');
         }
         
-        // Get video info using youtube-dl
-        const info = await youtubedl(url, {
-            dumpSingleJson: true,
-            noWarnings: true,
-            noCallHome: true,
-            noCheckCertificate: true,
-            preferFreeFormats: true,
-            youtubeSkipDashManifest: true,
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        // Get video info using ytdl with proper headers
+        const info = await ytdl.getInfo(videoId, {
+            requestOptions: {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Cookie': 'CONSENT=YES+srp.gws-20220215-0-RC2.en+FX+374; SOCS=CAI;'
+                }
+            }
         });
         
         // Get thumbnail
@@ -44,10 +45,10 @@ async function getVideoInfo(url) {
         
         return {
             success: true,
-            title: info.title || 'Unknown Title',
-            duration: info.duration || 0,
-            channel: info.uploader || 'Unknown Channel',
-            views: info.view_count || 0,
+            title: info.videoDetails.title,
+            duration: parseInt(info.videoDetails.lengthSeconds),
+            channel: info.videoDetails.author.name,
+            views: parseInt(info.videoDetails.viewCount),
             thumbnail: finalThumbnail,
             videoId: videoId
         };
@@ -83,9 +84,17 @@ async function downloadVideo(url, type, tempDir) {
     let filePath = null;
     
     try {
-        // Get video info for title
-        const info = await getVideoInfo(url);
-        let title = info.title
+        const info = await ytdl.getInfo(url, {
+            requestOptions: {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Cookie': 'CONSENT=YES+srp.gws-20220215-0-RC2.en+FX+374; SOCS=CAI;'
+                }
+            }
+        });
+        
+        let title = info.videoDetails.title
             .replace(/[^\w\s]/gi, '')
             .substring(0, 50)
             .trim();
@@ -98,29 +107,71 @@ async function downloadVideo(url, type, tempDir) {
         if (type === 'video') {
             filePath = path.join(tempDir, `${sanitizedTitle}_${timestamp}.mp4`);
             
-            // Download video with youtube-dl (format 18 = 360p mp4)
-            await youtubedl(url, {
-                output: filePath,
-                format: '18',
-                noWarnings: true,
-                noCallHome: true,
-                noCheckCertificate: true,
-                preferFreeFormats: true,
-                youtubeSkipDashManifest: true
+            // Try multiple format options
+            let format = info.formats.find(f => 
+                f.itag === 18 || 
+                f.qualityLabel === '360p' || 
+                f.qualityLabel === '360p 30fps' ||
+                (f.height === 360 && f.container === 'mp4')
+            );
+            
+            if (!format) {
+                format = info.formats
+                    .filter(f => f.hasVideo && f.hasAudio)
+                    .sort((a, b) => (a.height || 9999) - (b.height || 9999))[0];
+            }
+
+            if (!format) {
+                throw new Error('No suitable video format found');
+            }
+
+            const stream = ytdl(url, { 
+                format: format,
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Cookie': 'CONSENT=YES+srp.gws-20220215-0-RC2.en+FX+374;'
+                    }
+                }
+            });
+            
+            await new Promise((resolve, reject) => {
+                stream
+                    .pipe(fs.createWriteStream(filePath))
+                    .on('finish', resolve)
+                    .on('error', reject);
             });
         } else {
             filePath = path.join(tempDir, `${sanitizedTitle}_${timestamp}.mp3`);
             
-            // Download audio with youtube-dl
-            await youtubedl(url, {
-                output: filePath,
-                extractAudio: true,
-                audioFormat: 'mp3',
-                audioQuality: 0,
-                format: 'bestaudio',
-                noWarnings: true,
-                noCallHome: true,
-                noCheckCertificate: true
+            // Get audio format
+            let format = info.formats.find(f => f.hasAudio && !f.hasVideo);
+            
+            if (!format) {
+                format = info.formats
+                    .filter(f => f.hasAudio)
+                    .sort((a, b) => (b.audioBitrate || 0) - (a.audioBitrate || 0))[0];
+            }
+
+            if (!format) {
+                throw new Error('No audio format found');
+            }
+
+            const stream = ytdl(url, { 
+                format: format,
+                requestOptions: {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Cookie': 'CONSENT=YES+srp.gws-20220215-0-RC2.en+FX+374;'
+                    }
+                }
+            });
+
+            await new Promise((resolve, reject) => {
+                stream
+                    .pipe(fs.createWriteStream(filePath))
+                    .on('finish', resolve)
+                    .on('error', reject);
             });
         }
 
@@ -130,12 +181,10 @@ async function downloadVideo(url, type, tempDir) {
             throw new Error('Downloaded file is too small');
         }
 
-        console.log(`✅ Downloaded: ${title} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
-
         return {
             success: true,
             filePath: filePath,
-            title: info.title
+            title: info.videoDetails.title
         };
     } catch (error) {
         console.error('Download error:', error);
@@ -146,7 +195,7 @@ async function downloadVideo(url, type, tempDir) {
         
         return {
             success: false,
-            error: error.message || 'Download failed'
+            error: error.message
         };
     }
 }
@@ -156,46 +205,39 @@ async function downloadPlaylist(playlistUrl, type, tempDir) {
     const results = [];
     
     try {
-        // Get playlist info
-        const playlistInfo = await youtubedl(playlistUrl, {
-            dumpSingleJson: true,
-            flatPlaylist: true,
-            noWarnings: true,
-            noCallHome: true,
-            noCheckCertificate: true
+        const playlist = await ytpl(playlistUrl, { 
+            limit: 3,
+            pages: 1
         });
-        
-        const videos = playlistInfo.entries || [];
-        const totalVideos = Math.min(videos.length, 3); // Limit to 3 videos for Heroku
-        
-        for (let i = 0; i < totalVideos; i++) {
-            const video = videos[i];
+
+        for (let i = 0; i < playlist.items.length; i++) {
+            const item = playlist.items[i];
             
             try {
-                console.log(`Downloading ${i + 1}/${totalVideos}: ${video.title}`);
+                console.log(`Downloading ${i + 1}/${playlist.items.length}: ${item.title}`);
                 
-                const videoUrl = `https://youtube.com/watch?v=${video.id}`;
+                const videoUrl = `https://youtube.com/watch?v=${item.id}`;
                 const result = await downloadVideo(videoUrl, type, tempDir);
                 
                 if (result.success) {
                     results.push({
                         success: true,
                         filePath: result.filePath,
-                        title: video.title
+                        title: item.title
                     });
                 } else {
                     results.push({
                         success: false,
-                        title: video.title,
+                        title: item.title,
                         error: result.error
                     });
                 }
 
-                await new Promise(resolve => setTimeout(resolve, 3000));
+                await new Promise(resolve => setTimeout(resolve, 2000));
             } catch (itemError) {
                 results.push({
                     success: false,
-                    title: video.title,
+                    title: item.title,
                     error: itemError.message
                 });
             }
