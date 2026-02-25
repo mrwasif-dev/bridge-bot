@@ -1,10 +1,15 @@
+// =============================
+// TELEGRAM ➜ WHATSAPP BRIDGE
+// FINAL WORKING VERSION
+// =============================
+
 const express = require("express");
 const TelegramBot = require("node-telegram-bot-api");
 const {
   default: makeWASocket,
   useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  DisconnectReason
 } = require("@whiskeysockets/baileys");
 const axios = require("axios");
 const P = require("pino");
@@ -14,35 +19,47 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 let TARGET_JID = process.env.TARGET_JID;
 
 if (!TELEGRAM_TOKEN || !TARGET_JID) {
-  console.log("❌ Missing ENV Variables");
+  console.log("❌ Missing TELEGRAM_TOKEN or TARGET_JID");
   process.exit(1);
 }
 
 const PORT = process.env.PORT || 3000;
+
 const app = express();
-let currentQR = null;
+let qrCodeData = null;
 let sock;
 
+// =====================
+// WEB PAGE (QR DISPLAY)
+// =====================
+
 app.get("/", async (req, res) => {
-  if (!currentQR) {
-    return res.send("<h2>✅ WhatsApp Connected OR QR Not Ready</h2>");
+  if (!qrCodeData) {
+    return res.send("<h2>Waiting for QR...</h2>");
   }
 
-  const qrImage = await QRCode.toDataURL(currentQR);
+  const qrImage = await QRCode.toDataURL(qrCodeData);
 
   res.send(`
     <html>
-    <body style="text-align:center;">
-    <h2>Scan QR</h2>
+    <head>
+    <title>WhatsApp QR</title>
+    </head>
+    <body style="text-align:center;font-family:sans-serif;">
+    <h2>Scan QR To Connect WhatsApp</h2>
     <img src="${qrImage}" />
     </body>
     </html>
   `);
 });
 
-app.listen(PORT, () => console.log("🌐 Server Running"));
+app.listen(PORT, () => {
+  console.log("🌐 Server Running on Port", PORT);
+});
 
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+// =====================
+// WHATSAPP CONNECTION
+// =====================
 
 async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("auth");
@@ -51,7 +68,8 @@ async function startWhatsApp() {
   sock = makeWASocket({
     version,
     logger: P({ level: "silent" }),
-    auth: state
+    auth: state,
+    printQRInTerminal: false
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -59,10 +77,13 @@ async function startWhatsApp() {
   sock.ev.on("connection.update", (update) => {
     const { connection, qr, lastDisconnect } = update;
 
-    if (qr) currentQR = qr;
+    if (qr) {
+      qrCodeData = qr;
+      console.log("✅ QR Generated");
+    }
 
     if (connection === "open") {
-      currentQR = null;
+      qrCodeData = null;
       console.log("✅ WhatsApp Connected");
     }
 
@@ -71,16 +92,21 @@ async function startWhatsApp() {
         lastDisconnect?.error?.output?.statusCode !==
         DisconnectReason.loggedOut;
 
-      if (shouldReconnect) startWhatsApp();
+      if (shouldReconnect) {
+        console.log("🔄 Reconnecting...");
+        startWhatsApp();
+      }
     }
   });
 }
 
 startWhatsApp();
 
-//
-// ✅ TELEGRAM COMMANDS
-//
+// =====================
+// TELEGRAM BOT + COMMANDS
+// =====================
+
+const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
@@ -88,29 +114,38 @@ bot.on("message", async (msg) => {
 
   try {
 
-    // 🔹 Change JID Command
+    // =====================
+    // COMMAND: STATUS
+    // =====================
+    if (text === "/status") {
+      return bot.sendMessage(
+        chatId,
+        `📊 Status:\n\n🎯 JID: ${TARGET_JID}\n🟢 WhatsApp: ${sock ? "Connected" : "Not Connected"}`
+      );
+    }
+
+    // =====================
+    // COMMAND: CHANGE JID
+    // =====================
     if (text && text.startsWith("/jid")) {
       const newJid = text.split(" ")[1];
       if (newJid) {
         TARGET_JID = newJid;
-        return bot.sendMessage(chatId, "✅ JID Updated");
+        return bot.sendMessage(chatId, "✅ JID Updated Successfully");
       }
     }
 
-    // 🔹 Status Command
-    if (text === "/status") {
-      return bot.sendMessage(chatId,
-        `📊 Bot Running\n\n🎯 JID: ${TARGET_JID}\n🟢 WhatsApp: ${sock ? "Connected" : "Not Connected"}`
-      );
-    }
-
-    // 🔹 Restart WhatsApp Session
+    // =====================
+    // COMMAND: RESTART WHATSAPP
+    // =====================
     if (text === "/restart") {
       await bot.sendMessage(chatId, "♻ Restarting WhatsApp...");
       return startWhatsApp();
     }
 
-    // 🔹 Forward Text
+    // =====================
+    // FORWARD TEXT
+    // =====================
     if (text && !text.startsWith("/")) {
       if (sock) {
         await sock.sendMessage(TARGET_JID, {
@@ -119,7 +154,9 @@ bot.on("message", async (msg) => {
       }
     }
 
-    // 🔹 Forward Photo
+    // =====================
+    // FORWARD PHOTO
+    // =====================
     if (msg.photo) {
       const file = await bot.getFile(msg.photo.pop().file_id);
       const url = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
@@ -131,7 +168,9 @@ bot.on("message", async (msg) => {
       });
     }
 
-    // 🔹 Forward Video
+    // =====================
+    // FORWARD VIDEO
+    // =====================
     if (msg.video) {
       const file = await bot.getFile(msg.video.file_id);
       const url = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
@@ -140,6 +179,20 @@ bot.on("message", async (msg) => {
       await sock.sendMessage(TARGET_JID, {
         video: Buffer.from(res.data),
         caption: msg.caption || "🎥 Telegram Video"
+      });
+    }
+
+    // =====================
+    // FORWARD DOCUMENT
+    // =====================
+    if (msg.document) {
+      const file = await bot.getFile(msg.document.file_id);
+      const url = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
+      const res = await axios.get(url, { responseType: "arraybuffer" });
+
+      await sock.sendMessage(TARGET_JID, {
+        document: Buffer.from(res.data),
+        fileName: msg.document.file_name
       });
     }
 
