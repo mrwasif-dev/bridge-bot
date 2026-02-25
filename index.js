@@ -1,5 +1,5 @@
 const { Telegraf, Markup } = require('telegraf');
-const { downloadVideo, downloadPlaylist } = require('./downloader');
+const { downloadVideo, downloadPlaylist, getVideoInfo } = require('./downloader');
 const fs = require('fs-extra');
 const path = require('path');
 const http = require('http');
@@ -12,7 +12,7 @@ const TEMP_DIR = path.join(__dirname, 'temp');
 
 // Validate bot token
 if (!BOT_TOKEN) {
-    console.error('❌ BOT_TOKEN is missing! Please set it in Heroku Config Vars');
+    console.error('❌ BOT_TOKEN is missing! Please set it in .env file');
     process.exit(1);
 }
 
@@ -37,6 +37,31 @@ server.listen(PORT, () => {
     console.log(`✅ Server running on port ${PORT}`);
 });
 
+// Format duration (seconds to MM:SS or HH:MM:SS)
+function formatDuration(seconds) {
+    if (!seconds) return 'N/A';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    
+    if (hours > 0) {
+        return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    } else {
+        return `${minutes}:${secs.toString().padStart(2, '0')}`;
+    }
+}
+
+// Format views
+function formatViews(views) {
+    if (!views) return 'N/A';
+    if (views >= 1000000) {
+        return `${(views / 1000000).toFixed(1)}M`;
+    } else if (views >= 1000) {
+        return `${(views / 1000).toFixed(1)}K`;
+    }
+    return views.toString();
+}
+
 // Start command
 bot.start((ctx) => {
     ctx.reply(
@@ -54,8 +79,9 @@ bot.help((ctx) => {
     ctx.reply(
         '📖 *How to use:*\n\n' +
         '1️⃣ Send any YouTube video link\n' +
-        '2️⃣ Choose Video or Audio\n' +
-        '3️⃣ File will be downloaded and sent\n\n' +
+        '2️⃣ Video thumbnail and details will appear\n' +
+        '3️⃣ Choose Video or Audio\n' +
+        '4️⃣ File will be downloaded and sent\n\n' +
         '📋 *Playlist support:*\n' +
         'Send a playlist link and choose format for all videos',
         { parse_mode: 'Markdown' }
@@ -68,10 +94,14 @@ bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
 
     try {
-        if (url.includes('youtube.com/watch') || url.includes('youtu.be/')) {
+        if (url.includes('youtube.com/watch') || url.includes('youtu.be/') || url.includes('youtube.com/shorts/')) {
+            // Send typing indicator
+            await ctx.sendChatAction('typing');
+            
+            // Check if it's a playlist
             if (url.includes('list=')) {
                 userSessions.set(userId, { type: 'playlist', url: url });
-
+                
                 await ctx.reply(
                     '📋 *Playlist detected!*\n\nWhat would you like to download?',
                     {
@@ -83,15 +113,45 @@ bot.on('text', async (ctx) => {
                     }
                 );
             } else {
-                userSessions.set(userId, { type: 'video', url: url });
-
-                await ctx.reply(
-                    '🎬 *Video detected!*\n\nWhat would you like to download?',
+                // Single video - get info and show thumbnail
+                await ctx.sendChatAction('upload_photo');
+                
+                // Get video info
+                const info = await getVideoInfo(url);
+                
+                if (!info || !info.success) {
+                    return ctx.reply('❌ Could not fetch video information. Please try again.');
+                }
+                
+                // Store video info in session
+                userSessions.set(userId, { 
+                    type: 'video', 
+                    url: url,
+                    title: info.title,
+                    duration: info.duration,
+                    channel: info.channel,
+                    views: info.views
+                });
+                
+                // Create caption
+                const caption = 
+                    `🎬 *${info.title}*\n\n` +
+                    `📺 *Channel:* ${info.channel}\n` +
+                    `⏱️ *Duration:* ${formatDuration(info.duration)}\n` +
+                    `👁️ *Views:* ${formatViews(info.views)}\n\n` +
+                    `⬇️ *Choose download option:*`;
+                
+                // Send photo with buttons
+                await ctx.replyWithPhoto(
+                    info.thumbnail,
                     {
+                        caption: caption,
                         parse_mode: 'Markdown',
                         ...Markup.inlineKeyboard([
-                            [Markup.button.callback('🎬 Video (360p)', 'single_video')],
-                            [Markup.button.callback('🎵 Audio only', 'single_audio')]
+                            [
+                                Markup.button.callback('🎬 Video (360p)', 'single_video'),
+                                Markup.button.callback('🎵 Audio only', 'single_audio')
+                            ]
                         ])
                     }
                 );
@@ -115,7 +175,10 @@ bot.action('single_video', async (ctx) => {
     }
 
     await ctx.answerCbQuery();
-    await ctx.editMessageText('⏳ *Downloading video...*\nPlease wait...', { parse_mode: 'Markdown' });
+    await ctx.editMessageCaption(
+        `⏳ *Downloading video...*\nPlease wait...`,
+        { parse_mode: 'Markdown' }
+    );
 
     try {
         const result = await downloadVideo(session.url, 'video', TEMP_DIR);
@@ -124,7 +187,7 @@ bot.action('single_video', async (ctx) => {
             await ctx.replyWithVideo(
                 { source: result.filePath },
                 {
-                    caption: `🎬 *${result.title}*\n\n📹 Quality: 360p`,
+                    caption: `🎬 *${session.title || result.title}*\n\n📹 Quality: 360p`,
                     parse_mode: 'Markdown'
                 }
             );
@@ -153,7 +216,10 @@ bot.action('single_audio', async (ctx) => {
     }
 
     await ctx.answerCbQuery();
-    await ctx.editMessageText('⏳ *Downloading audio...*\nPlease wait...', { parse_mode: 'Markdown' });
+    await ctx.editMessageCaption(
+        `⏳ *Downloading audio...*\nPlease wait...`,
+        { parse_mode: 'Markdown' }
+    );
 
     try {
         const result = await downloadVideo(session.url, 'audio', TEMP_DIR);
@@ -162,8 +228,10 @@ bot.action('single_audio', async (ctx) => {
             await ctx.replyWithAudio(
                 { source: result.filePath },
                 {
-                    caption: `🎵 *${result.title}*`,
-                    parse_mode: 'Markdown'
+                    caption: `🎵 *${session.title || result.title}*`,
+                    parse_mode: 'Markdown',
+                    title: session.title || result.title,
+                    performer: session.channel || 'YouTube'
                 }
             );
             
