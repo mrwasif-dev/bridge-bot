@@ -98,10 +98,10 @@ async function downloadVideo(url, type, tempDir) {
         if (type === 'video') {
             filePath = path.join(tempDir, `${sanitizedTitle}_${timestamp}.mp4`);
             
-            // Download video with youtube-dl
+            // Download video with youtube-dl (format 18 = 360p mp4)
             await youtubedl(url, {
                 output: filePath,
-                format: '18', // 360p mp4
+                format: '18',
                 noWarnings: true,
                 noCallHome: true,
                 noCheckCertificate: true,
@@ -116,7 +116,7 @@ async function downloadVideo(url, type, tempDir) {
                 output: filePath,
                 extractAudio: true,
                 audioFormat: 'mp3',
-                audioQuality: 0, // Best quality
+                audioQuality: 0,
                 format: 'bestaudio',
                 noWarnings: true,
                 noCallHome: true,
@@ -166,7 +166,7 @@ async function downloadPlaylist(playlistUrl, type, tempDir) {
         });
         
         const videos = playlistInfo.entries || [];
-        const totalVideos = Math.min(videos.length, 3); // Limit to 3 videos
+        const totalVideos = Math.min(videos.length, 3); // Limit to 3 videos for Heroku
         
         for (let i = 0; i < totalVideos; i++) {
             const video = videos[i];
