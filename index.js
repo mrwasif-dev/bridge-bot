@@ -39,7 +39,7 @@ server.listen(PORT, () => {
 
 // Format duration (seconds to MM:SS or HH:MM:SS)
 function formatDuration(seconds) {
-    if (!seconds) return 'N/A';
+    if (!seconds || seconds === 0) return 'N/A';
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
@@ -53,7 +53,7 @@ function formatDuration(seconds) {
 
 // Format views
 function formatViews(views) {
-    if (!views) return 'N/A';
+    if (!views || views === 0) return 'N/A';
     if (views >= 1000000) {
         return `${(views / 1000000).toFixed(1)}M`;
     } else if (views >= 1000) {
@@ -200,6 +200,7 @@ bot.action('single_video', async (ctx) => {
             await ctx.reply(`❌ Error: ${result.error}`);
         }
     } catch (error) {
+        console.error('Download error:', error);
         await ctx.reply('❌ Download failed. Please try again.');
     } finally {
         userSessions.delete(userId);
@@ -243,6 +244,7 @@ bot.action('single_audio', async (ctx) => {
             await ctx.reply(`❌ Error: ${result.error}`);
         }
     } catch (error) {
+        console.error('Download error:', error);
         await ctx.reply('❌ Download failed. Please try again.');
     } finally {
         userSessions.delete(userId);
@@ -298,6 +300,7 @@ bot.action('playlist_video', async (ctx) => {
             { parse_mode: 'Markdown' }
         );
     } catch (error) {
+        console.error('Playlist error:', error);
         await ctx.reply('❌ Playlist download failed. Please try again.');
     } finally {
         userSessions.delete(userId);
@@ -353,6 +356,7 @@ bot.action('playlist_audio', async (ctx) => {
             { parse_mode: 'Markdown' }
         );
     } catch (error) {
+        console.error('Playlist error:', error);
         await ctx.reply('❌ Playlist download failed. Please try again.');
     } finally {
         userSessions.delete(userId);
