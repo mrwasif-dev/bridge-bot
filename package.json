@@ -1,15 +1,13 @@
 {
   "name": "youtube-telegram-bot",
   "version": "1.0.0",
-  "description": "Telegram bot for YouTube downloads - Deploy on Heroku",
+  "description": "Telegram bot for YouTube downloads",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node index.js"
   },
   "engines": {
-    "node": "16.x",
-    "npm": "8.x"
+    "node": "16.x"
   },
   "dependencies": {
     "telegraf": "^4.12.0",
@@ -17,8 +15,5 @@
     "ytpl": "^2.3.0",
     "fs-extra": "^11.1.0",
     "dotenv": "^16.0.3"
-  },
-  "devDependencies": {
-    "nodemon": "^2.0.20"
   }
 }
