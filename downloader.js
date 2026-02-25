@@ -2,17 +2,57 @@ const ytdl = require('@distube/ytdl-core');
 const ytpl = require('ytpl');
 const fs = require('fs-extra');
 const path = require('path');
-const https = require('https');
+const puppeteer = require('puppeteer');
 
-// Custom agent
-const agent = ytdl.createAgent(undefined, {
-  requestOptions: {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept-Language': 'en-US,en;q=0.9',
+// Cookies store
+let cookies = [];
+
+// Function to get fresh cookies using puppeteer
+async function refreshCookies() {
+    console.log('🔄 Refreshing YouTube cookies...');
+    
+    try {
+        const browser = await puppeteer.launch({
+            headless: 'new',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu'
+            ]
+        });
+        
+        const page = await browser.newPage();
+        
+        // Set viewport and user agent
+        await page.setViewport({ width: 1280, height: 800 });
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        
+        // Visit YouTube
+        await page.goto('https://www.youtube.com', {
+            waitUntil: 'networkidle2',
+            timeout: 30000
+        });
+        
+        // Wait a bit
+        await page.waitForTimeout(5000);
+        
+        // Get cookies
+        const cookiesData = await page.cookies();
+        
+        // Format cookies for ytdl
+        cookies = cookiesData.map(c => `${c.name}=${c.value}`).join('; ');
+        
+        await browser.close();
+        
+        console.log('✅ Cookies refreshed successfully');
+        return true;
+    } catch (error) {
+        console.error('❌ Failed to refresh cookies:', error);
+        return false;
     }
-  }
-});
+}
 
 // Download single video
 async function downloadVideo(url, type, tempDir) {
@@ -21,15 +61,46 @@ async function downloadVideo(url, type, tempDir) {
     try {
         console.log('Fetching video info...');
         
-        // Get video info with options
-        const info = await ytdl.getInfo(url, {
-            agent: agent,
+        // Refresh cookies if needed
+        if (!cookies.length) {
+            await refreshCookies();
+        }
+        
+        // Create agent with cookies
+        const agent = ytdl.createAgent(undefined, {
             requestOptions: {
                 headers: {
-                    'Cookie': 'CONSENT=YES+srp.gws-20220215-0-RC2.en+FX+374',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept-Language': 'en-US,en;q=0.9,ur;q=0.8',
+                    'Cookie': cookies
                 }
             }
         });
+        
+        // Get video info with retry
+        let info;
+        try {
+            info = await ytdl.getInfo(url, {
+                agent: agent,
+                requestOptions: {
+                    headers: {
+                        'Cookie': cookies
+                    }
+                }
+            });
+        } catch (infoError) {
+            console.log('Info fetch failed, refreshing cookies and retrying...');
+            await refreshCookies();
+            
+            info = await ytdl.getInfo(url, {
+                agent: agent,
+                requestOptions: {
+                    headers: {
+                        'Cookie': cookies
+                    }
+                }
+            });
+        }
         
         let title = info.videoDetails.title
             .replace(/[^\w\s]/gi, '')
@@ -44,15 +115,13 @@ async function downloadVideo(url, type, tempDir) {
         if (type === 'video') {
             filePath = path.join(tempDir, `${sanitizedTitle}_${timestamp}.mp4`);
             
-            // Get 360p format
+            // Try different formats
             let format = info.formats.find(f => 
                 f.qualityLabel === '360p' || 
                 f.qualityLabel === '360p 30fps' ||
-                f.qualityLabel === '360p 60fps' ||
                 f.height === 360
             );
             
-            // If no 360p, get lowest quality
             if (!format) {
                 format = info.formats
                     .filter(f => f.hasVideo && f.hasAudio)
@@ -65,13 +134,12 @@ async function downloadVideo(url, type, tempDir) {
 
             console.log(`Downloading video: ${format.qualityLabel || format.quality || 'unknown'}`);
 
-            // Download video
             const stream = ytdl(url, {
                 format: format,
                 agent: agent,
                 requestOptions: {
                     headers: {
-                        'Cookie': 'CONSENT=YES+srp.gws-20220215-0-RC2.en+FX+374',
+                        'Cookie': cookies
                     }
                 }
             });
@@ -79,14 +147,8 @@ async function downloadVideo(url, type, tempDir) {
             await new Promise((resolve, reject) => {
                 stream
                     .pipe(fs.createWriteStream(filePath))
-                    .on('finish', () => {
-                        console.log('Video download finished');
-                        resolve();
-                    })
-                    .on('error', (err) => {
-                        console.error('Stream error:', err);
-                        reject(err);
-                    });
+                    .on('finish', resolve)
+                    .on('error', reject);
             });
             
         } else {
@@ -101,13 +163,12 @@ async function downloadVideo(url, type, tempDir) {
 
             console.log('Downloading audio...');
 
-            // Download audio
             const stream = ytdl(url, {
                 format: format,
                 agent: agent,
                 requestOptions: {
                     headers: {
-                        'Cookie': 'CONSENT=YES+srp.gws-20220215-0-RC2.en+FX+374',
+                        'Cookie': cookies
                     }
                 }
             });
@@ -115,20 +176,14 @@ async function downloadVideo(url, type, tempDir) {
             await new Promise((resolve, reject) => {
                 stream
                     .pipe(fs.createWriteStream(filePath))
-                    .on('finish', () => {
-                        console.log('Audio download finished');
-                        resolve();
-                    })
-                    .on('error', (err) => {
-                        console.error('Stream error:', err);
-                        reject(err);
-                    });
+                    .on('finish', resolve)
+                    .on('error', reject);
             });
         }
 
         // Verify file
         const stats = await fs.stat(filePath);
-        if (stats.size < 1000) { // Less than 1KB
+        if (stats.size < 1000) {
             throw new Error('Downloaded file is too small');
         }
 
@@ -141,15 +196,12 @@ async function downloadVideo(url, type, tempDir) {
         };
         
     } catch (error) {
-        console.error('Download error details:', error);
+        console.error('Download error:', error);
         
-        // Clean up on error
         if (filePath && fs.existsSync(filePath)) {
             try {
                 fs.removeSync(filePath);
-            } catch (e) {
-                console.error('Cleanup error:', e);
-            }
+            } catch (e) {}
         }
         
         return {
@@ -166,9 +218,8 @@ async function downloadPlaylist(playlistUrl, type, tempDir) {
     try {
         console.log('Fetching playlist...');
         
-        // Get playlist
         const playlist = await ytpl(playlistUrl, { 
-            limit: 5,
+            limit: 3, // Reduce to 3 for testing
             pages: 1
         });
 
@@ -197,11 +248,9 @@ async function downloadPlaylist(playlistUrl, type, tempDir) {
                     });
                 }
 
-                // Delay between downloads
-                await new Promise(resolve => setTimeout(resolve, 3000));
+                await new Promise(resolve => setTimeout(resolve, 5000));
                 
             } catch (itemError) {
-                console.error(`Error downloading ${item.title}:`, itemError);
                 results.push({
                     success: false,
                     title: item.title,
@@ -217,6 +266,11 @@ async function downloadPlaylist(playlistUrl, type, tempDir) {
         throw error;
     }
 }
+
+// Refresh cookies every 30 minutes
+setInterval(async () => {
+    await refreshCookies();
+}, 30 * 60 * 1000);
 
 module.exports = {
     downloadVideo,
