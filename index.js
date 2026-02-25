@@ -24,7 +24,7 @@ let currentQR = null;
 
 app.get("/", async (req, res) => {
   if (!currentQR) {
-    return res.send("<h2>⚡ WhatsApp Connected or QR Not Generated</h2>");
+    return res.send("<h2>✅ WhatsApp Connected or QR Not Generated</h2>");
   }
 
   const qrImage = await QRCode.toDataURL(currentQR);
@@ -61,10 +61,7 @@ async function startWhatsApp() {
   sock.ev.on("connection.update", async (update) => {
     const { connection, qr, lastDisconnect } = update;
 
-    if (qr) {
-      currentQR = qr;
-      console.log("QR Updated");
-    }
+    if (qr) currentQR = qr;
 
     if (connection === "open") {
       currentQR = null;
@@ -82,12 +79,15 @@ async function startWhatsApp() {
 
   bot.on("message", async (msg) => {
     try {
+
+      // TEXT
       if (msg.text) {
         await sock.sendMessage(TARGET_JID, {
           text: `📩 Telegram:\n\n${msg.text}`
         });
       }
 
+      // PHOTO
       if (msg.photo) {
         const file = await bot.getFile(msg.photo.pop().file_id);
         const url = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
@@ -99,6 +99,7 @@ async function startWhatsApp() {
         });
       }
 
+      // VIDEO
       if (msg.video) {
         const file = await bot.getFile(msg.video.file_id);
         const url = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
@@ -110,6 +111,7 @@ async function startWhatsApp() {
         });
       }
 
+      // DOCUMENT
       if (msg.document) {
         const file = await bot.getFile(msg.document.file_id);
         const url = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${file.file_path}`;
